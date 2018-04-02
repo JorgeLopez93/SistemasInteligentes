@@ -9,17 +9,14 @@
 #include <curand.h>
 #include <curand_kernel.h>
 #include <ctime>
-
 #define PI 3.14159265
 
-//#define cudaCheck(x) { cudaError_t err = x; if (err != cudaSuccess) { printf("Cuda error: %d in %s at %s:%d\n", err, #x, __FILE__, __LINE__); assert(0); } }
-
-__device__ void Ackley(int D, int i, float* Sol, float* Fitness){
-  float a = 20;
-  float b = 0.2;
-  float c = 2*PI;
-  float val_1 = 0.0;
-  float val_2 = 0.0;
+__device__ void Ackley(int D, int i, double* Sol, double* Fitness){
+  double a = 20;
+  double b = 0.2;
+  double c = 2*PI;
+  double val_1 = 0.0;
+  double val_2 = 0.0;
   for (int j = 0; j < D; j++) {
     val_1 = val_1 + (Sol[(i*D) + j]*Sol[(i*D) + j])/D;
     val_2 = val_2 + cos(c*Sol[(i*D) + j])/D;
@@ -28,129 +25,165 @@ __device__ void Ackley(int D, int i, float* Sol, float* Fitness){
   Fitness[i] = a + exp(1.0) - (a*exp(-b*val_1)) - exp(val_2);
 }
 
-__device__ void Schwefel(int D, int i, float* Sol, float* Fitness){
-  float val = 0.0;
+__device__ void Schwefel(int D, int i, double* Sol, double* Fitness){
+  double val = 0.0;
   for (int j = 0; j < D; j++) {
-    val = val + Sol[i]*sin(sqrt(abs(Sol[i])));
+    val = val + Sol[(i*D) + j]*sin(sqrt(abs(Sol[(i*D) + j])));
   }
-  Fitness[i] = 418.9829*D - val;
+  Fitness[i] = (418.9829*D) - val;
 }
 
-__device__ void Fun3(int D, int i, float* Sol, float* Fitness){
-  float val = 0.0;
+__device__ void Fun3(int D, int i, double* Sol, double* Fitness){
+  double val = 0.0;
   for (int j = 0; j < D; j++) {
-    val = val + Sol[i]*Sol[i];
+    val = val + (Sol[(i*D) + j]*Sol[(i*D) + j]);
   }
-  float r = sin(sqrt(val));
+  double r = sin(sqrt(val));
   r *= r;
-  r = r + 0.5;
-  float b = 1.0 + 0.001*val;
+  r = r - 0.5;
+  double b = 1.0 + 0.001*val;
   b *= b;
-  Fitness[i] = 0.5 - (r/b);
+  Fitness[i] = (0.5 - (r/b))*(-1);
 }
 
+__device__ void funFitness (int D, int i, double* Sol, double* Fitness, int fun){
+  switch (fun) {
+    case 1:{
+      Ackley(D, i, Sol, Fitness);
+      break;}
+    case 2:{
+      Schwefel(D, i, Sol, Fitness);
+      break;}
+    case 3:{
+      Fun3(D, i, Sol, Fitness);
+      break;}
+  }
+}
 
-
-__device__ float simplebounds(float val, float lower, float upper){
+__device__ double simplebounds(double val, double lower, double upper){
   if (val < lower) val = lower;
   if (val > upper) val = upper;
   return val;
 }
 
-__global__ void best_bat(int D, float* Fitness, float* F, int NP, float* best, float* Sol, int* J){
+__global__ void best_bat(int D, double* Fitness, double* F, int NP, double* best, double* Sol, int* J,int b){
   int i = threadIdx.x + (blockIdx.x * blockDim.x);
-  int a = 2;
+  int NumHilos = blockDim.x * gridDim.x;
   F[i] = Fitness[i];
-  while (i % a == 0 ) {
-    __syncthreads();
-    if (i + (a/2) < NP) {
-      if (F[i] > F[i + (a/2)]) {
-        F[i] = F[i + (a/2)];
-        J[i] = i + (a/2);
-      }
-    }else {break;}
-    printf("%f - %d - %d\n", F[i], i, i + (a/2));
-    a *= 2;
+  J[i] = i;
+  int ii = i + NumHilos;
+  while (ii < NP){
+    if (F[i] > Fitness[ii]){
+      F[i] = Fitness[ii];
+      J[i] = ii;
+    }
+    ii += NumHilos;
   }
   __syncthreads();
-  if (i == 0){
-    for (size_t j = 0; j < D; j++) {
-      best[j] = Sol[(J[i]*D) + j];
+  if (blockIdx.x == 0) {
+    i = threadIdx.x;
+    ii = i + blockDim.x ;
+    while (ii < NumHilos){
+      if (F[i] > F[ii]){
+        F[i] = F[ii];
+        J[i] = J[ii];
+      }
+      ii +=  blockDim.x;
+    }
+    __syncthreads();
+    if (threadIdx.x == 0) {
+      i = 0;
+      ii = i + 1 ;
+      while (ii < blockDim.x){
+        if (F[i] > F[ii]){
+          F[i] = F[ii];
+          J[i] = J[ii];
+        }
+        ii ++;
+      }
+      Fitness[J[i]] = 100000;
+      for (size_t j = 0; j < D; j++) {
+        best[j + (20*b)] = Sol[(J[i]*D) + j];
+      }
     }
   }
 }
 
-__global__ void init_bat(int D, float* Lb, float* Ub, float *v, float * Sol, float* Fitness, float* Q){
+__global__ void init_bat(int D, double* Lb, double* Ub, double *v, double * Sol, double* Fitness, double* Q, int function){
   int i = threadIdx.x + (blockIdx.x * blockDim.x);
   curandState_t state;
   Q[i] = 0;
   curand_init((unsigned long long)clock(), i, 0, &state);
-  float rnd;
-  //printf("\n" );
+  double rnd;
   for (int j = 0; j < D; j++) {
-    rnd = curand_uniform(&state);
+    rnd = curand_uniform_double(&state);
+    v[(i*D) + j] = 0.0;
+
     Sol[(i*D) + j] = Lb[j] + (Ub[j] - Lb[j])*rnd;
-    //printf("%f _ ", Sol[(i*D) + j]);
+    Sol[(i*D) + j] = simplebounds(Sol[(i*D) + j], Lb[j], Ub[j]);
   }
-  Ackley(D, i, Sol, Fitness);
-  //printf("%f - %d\n", Fitness[i], i);
+  funFitness(D, i, Sol, Fitness, function);
+
   __syncthreads();
 }
 
-__global__ void move_bat(int D, float* Lb, float* Ub, float *v, float * Sol,
-                    float* Fitness, float* Q, float Qmin, float Qmax, float A,
-                    float* best, float* S, float r, float* Fnew){
+__global__ void move_bat(int D, double* Lb, double* Ub, double *v, double * Sol,
+                    double* Fitness, double* Q, double Qmin, double Qmax, double A,
+                    double* best, double* S, double r, double* Fnew, int function){
   int i = threadIdx.x + (blockIdx.x * blockDim.x);
   curandState_t state;
   //a[i] = i;
   curand_init((unsigned long long)clock(), i, 0, &state);
-  float rnd;
-  rnd = curand_uniform(&state);
+  double rnd;
+  rnd = curand_uniform_double(&state);
   Q[i] = Qmin + (Qmin - Qmax)*rnd;
   for (int j = 0; j < D; j++) {
     v[(i*D) + j] = v[(i*D) + j] + (Sol[(i*D) + j] - best[j])*Q[i];
     S[(i*D) + j] = Sol[(i*D) + j] + v[(i*D) + j];
     S[(i*D) + j] = simplebounds(S[(i*D) + j], Lb[j], Ub[j]);
   }
-  rnd = curand_uniform(&state);
+  rnd = curand_uniform_double(&state);
   if (rnd > r) {
+    int k = curand(&state) % 15;
     for (int j = 0; j < D; j++) {
-      S[(i*D) + j] = best[j] + 0.001 * curand_normal(&state);
+      rnd = curand_uniform_double(&state);
+      S[(i*D) + j] = best[j + (k*20)] + ((Ub[j] - Lb[j])/60 * ((rnd*2) - 1));
       S[(i*D) + j] = simplebounds(S[(i*D) + j], Lb[j], Ub[j]);
     }
   }
-  Ackley(D, i, S, Fnew); //falta
-  rnd = curand_uniform(&state);
+  funFitness(D, i, S, Fnew, function);
+  rnd = curand_uniform_double(&state);
   if (Fnew[i] <= Fitness[i] && rnd < A) {
     for (int j = 0; j < D; j++) {
       Sol[(i*D) + j] = S[(i*D) + j];
     }
     Fitness[i] = Fnew[i];
   }
-  printf("%f - %d\n", Fitness[i], i);
   __syncthreads();
 }
 
-void run_bat (int D, int NP,int N_Gen, float A, float r, float Qmin, float Qmax, float Lower, float Upper){
+void run_bat (int D, int NP,int N_Gen, double A, double r, double Qmin, double Qmax, double Lower, double Upper, int function){
 
-  unsigned long long int D_size = D*sizeof(float);
-  unsigned long long int NP_size = NP*sizeof(float);
-  unsigned long long int DxNP_size = D*NP*sizeof(float);
+  unsigned long long int D_size = D*sizeof(double);
+  unsigned long long int NP_size = NP*sizeof(double);
+  unsigned long long int DxNP_size = D*NP*sizeof(double);
 
-  float *Lb, *Ub, *best; //size D
-  float *Q, *Fnew, *Fitness, *F;      // size NP
-  float  *v, *Sol, *S;//size D*NP
+  double *Lb, *Ub, *best; //size D
+  double *Q, *Fnew, *Fitness, *F;      // size NP
+  double  *v, *Sol, *S;//size D*NP
   int *J;
 
-  float *_Lb = (float*)malloc(D_size);
-  float *_Ub = (float*)malloc(D_size);
+  double *_Lb = (double*)malloc(D_size);
+  double *_Ub = (double*)malloc(D_size);
+
+  double f, fnew, ff;
   for (int i = 0; i < D; i++) {
     _Lb[i] = Lower;
     _Ub[i] = Upper;
   }
   cudaMallocManaged(&Lb, D_size);
   cudaMallocManaged(&Ub, D_size);
-  cudaMallocManaged(&best, D_size);
+  cudaMallocManaged(&best, D_size*20);
 
   cudaMallocManaged(&Q, NP_size);
   cudaMallocManaged(&Fnew, NP_size);
@@ -165,20 +198,36 @@ void run_bat (int D, int NP,int N_Gen, float A, float r, float Qmin, float Qmax,
 
   cudaMemcpy(Lb, _Lb, D_size, cudaMemcpyHostToDevice );
   cudaMemcpy(Ub, _Ub, D_size, cudaMemcpyHostToDevice );
-  init_bat<<< NP, 1>>>(D, Lb, Ub, v, Sol, Fitness, Q);
-  //cudaMemcpy(_Ub, Ub, D_size, cudaMemcpyDeviceToHost);
+  init_bat<<< NP/100, 100>>>(D, Lb, Ub, v, Sol, Fitness, Q, function);
+  for (size_t i = 0; i < 20; i++) {
+    best_bat<<< 10, 100>>>(D, Fitness, F, NP, best, Sol, J, i);
+    cudaMemcpy(&f, F, sizeof(double), cudaMemcpyDeviceToHost);
 
-  best_bat<<< NP, 1>>>(D, Fitness, F, NP, best, Sol, J);
-  for (size_t i = 0; i < N_Gen; i++) {
-    move_bat<<< NP, 1>>>(D, Lb, Ub, v, Sol, Fitness, Q, Qmin, Qmax, A, best, S, r, Fnew);
-    best_bat<<< NP, 1>>>(D, Fitness, F, NP, best, Sol, J);
   }
-  cudaMemcpy(_Ub, Ub, D_size, cudaMemcpyDeviceToHost);
+
+  for (size_t i = 0; i < N_Gen; i++) {
+    move_bat<<< NP/100, 100>>>(D, Lb, Ub, v, Sol, Fitness, Q, Qmin, Qmax, A, best, S, r, Fnew, function);
+    for (size_t i = 0; i < 20; i++) {
+      best_bat<<< 10, 100>>>(D, Fitness, F, NP, best, Sol, J, i);
+      cudaMemcpy(&f, F, sizeof(double), cudaMemcpyDeviceToHost);
+      if(i == 0) ff = f;
+    }
+    if(fnew < f){
+      //A *= 0.8;
+      //r *= (1 - exp(-10.0));
+      f = fnew;
+    }
+  }
+  printf("-------------\n");
+  printf("%5.10f\n", ff);
+
 }
 
-
 int main() {
-  run_bat(8, 40, 50, 0.5, 0.5, 0.0, 2.0, -32768.0, 32768.0);
-  //printf("fada \n");
+  for (size_t i = 0; i < 100; i++) {
+    //run_bat(2, 10000, 50, 0.5, 0.5, 0.0, 2.0, -32.7680, 32.7680, 1);
+    //run_bat(8, 10000, 50, 0.5, 0.5, 0.0, 2.0, -500.0, 500.0, 2);
+    run_bat(8, 10000, 50, 0.5, 0.5, 0.0, 2.0, -100.0, 100.0, 3);
+  }
   return 0;
 }
