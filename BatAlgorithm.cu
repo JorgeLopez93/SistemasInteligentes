@@ -170,7 +170,7 @@ __global__ void move_bat(int D, double* Lb, double* Ub, double *v, double * Sol,
   __syncthreads();
 }
 
-void run_bat (int D, int NP,int N_Gen, double A, double r, double Qmin, double Qmax, double Lower, double Upper, int function){
+double run_bat (int D, int NP,int N_Gen, double A, double r, double Qmin, double Qmax, double Lower, double Upper, int function, double* vecF){
 
   unsigned long long int D_size = D*sizeof(double);
   unsigned long long int NP_size = NP*sizeof(double);
@@ -212,37 +212,54 @@ void run_bat (int D, int NP,int N_Gen, double A, double r, double Qmin, double Q
     cudaMemcpy(&f, F, sizeof(double), cudaMemcpyDeviceToHost);
     if(i == 0) ff = f;
   }
+  vecF[0] = ff;
   //printf("-------------\n");
   //printf("%5.10f\n", ff);
 
   for (size_t i = 0; i < N_Gen; i++) {
     move_bat<<< NP/100, 100>>>(D, Lb, Ub, v, Sol, Fitness, Q, Qmin, Qmax, A, best, S, r, Fnew, function);
-    for (size_t i = 0; i < 20; i++) {
-      best_bat<<< 10, 100>>>(D, Fitness, F, NP, best, Sol, J, i);
+    for (size_t j = 0; j < 20; j++) {
+      best_bat<<< 10, 100>>>(D, Fitness, F, NP, best, Sol, J, j);
       cudaMemcpy(&f, F, sizeof(double), cudaMemcpyDeviceToHost);
-      if(i == 0) ff = f;
+      if(j == 0) ff = f;
     }
     //printf("-------------\n");
     //printf("%5.10f\n", ff);
+    vecF[i + 1] = ff;
     if(fnew < f){
       A *= 0.8;
       r *= (1 - exp(-1.0));
       f = fnew;
     }
   }
-  printf("-------------\n");
-  printf("%5.10f\n", ff);
+  //printf("-------------\n");
+  printf("%5.10f\n", -ff);
+
   cudaFree(Lb); cudaFree(Ub); cudaFree(best);
   cudaFree(Q); cudaFree(Fnew); cudaFree(Fitness);
   cudaFree(F); cudaFree(v); cudaFree(Sol);
   cudaFree(S); cudaFree(J);
+  return ff;
 }
 
 int main() {
+  double *v = (double*)malloc(51*sizeof(double));
+  double *vbest = (double*)malloc(51*sizeof(double));
+  double f, fbest = 100000;
   for (size_t i = 0; i < 100; i++) {
-    //run_bat(2, 20000, 50, 0.5, 0.5, 0.0, 2.0, -32.7680, 32.7680, 1);
-    //run_bat(2, 20000, 50, 0.5, 0.5, 0.0, 2.0, -500.0, 500.0, 2);
-    run_bat(8, 20000, 50, 0.5, 0.5, 0.0, 2.0, -100.0, 100.0, 3);
+    //f = run_bat(8, 20000, 50, 0.5, 0.5, 0.0, 2.0, -32.7680, 32.7680, 1, v);
+    //f = run_bat(2, 20000, 50, 0.5, 0.5, 0.0, 2.0, -500.0, 500.0, 2, v);
+    f = run_bat(8, 20000, 50, 0.5, 0.5, 0.0, 2.0, -100.0, 100.0, 3, v);
+    if (fbest > f) {
+      fbest = f;
+      for (size_t j = 0; j < 51; j++) {
+        vbest[j] = v[j];
+      }
+    }
+  }
+  printf("-------------\n");
+  for (size_t j = 0; j < 51; j++) {
+    printf("%5.10f\n", -vbest[j]);
   }
   return 0;
 }
