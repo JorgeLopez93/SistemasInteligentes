@@ -72,7 +72,7 @@ __global__ void best_bat(int D, double* Fitness, double* F, int NP, double* best
   F[i] = Fitness[i];
   J[i] = i;
   int ii = i + NumHilos;
-  while (ii < NP){
+  while (ii < (NP - b)){
     if (F[i] > Fitness[ii]){
       F[i] = Fitness[ii];
       J[i] = ii;
@@ -101,10 +101,16 @@ __global__ void best_bat(int D, double* Fitness, double* F, int NP, double* best
         }
         ii ++;
       }
-      Fitness[J[i]] = 100000;
+      double td = Fitness[J[i]];
+      Fitness[J[i]] = Fitness[NP - b - 1];
+      Fitness[NP - b - 1] = td;
+      //Fitness[J[i]] = 100000;
       for (size_t j = 0; j < D; j++) {
-        best[j + (20*b)] = Sol[(J[i]*D) + j];
+        best[j + (D*b)] = Sol[(J[i]*D) + j];
+        Sol[(J[i]*D) + j] = Sol[((NP - b - 1)*D) + j];
+        Sol[((NP - b - 1)*D) + j] = best[j + (D*b)];
       }
+
     }
   }
 }
@@ -135,19 +141,21 @@ __global__ void move_bat(int D, double* Lb, double* Ub, double *v, double * Sol,
   //a[i] = i;
   curand_init((unsigned long long)clock(), i, 0, &state);
   double rnd;
+  int k = curand(&state) % 20;
   rnd = curand_uniform_double(&state);
   Q[i] = Qmin + (Qmin - Qmax)*rnd;
   for (int j = 0; j < D; j++) {
-    v[(i*D) + j] = v[(i*D) + j] + (Sol[(i*D) + j] - best[j])*Q[i];
+    v[(i*D) + j] = v[(i*D) + j] + ((Sol[(i*D) + j] - best[j + (k*D)])*Q[i]);
     S[(i*D) + j] = Sol[(i*D) + j] + v[(i*D) + j];
     S[(i*D) + j] = simplebounds(S[(i*D) + j], Lb[j], Ub[j]);
   }
   rnd = curand_uniform_double(&state);
   if (rnd > r) {
-    int k = curand(&state) % 15;
+
     for (int j = 0; j < D; j++) {
       rnd = curand_uniform_double(&state);
-      S[(i*D) + j] = best[j + (k*20)] + ((Ub[j] - Lb[j])/60 * ((rnd*2) - 1));
+      //rnd = curand_normal_double(&state);
+      S[(i*D) + j] = best[j + (k*D)] + (((Ub[j] - Lb[j])/20)* A * ((rnd*2)-1));
       S[(i*D) + j] = simplebounds(S[(i*D) + j], Lb[j], Ub[j]);
     }
   }
@@ -202,8 +210,10 @@ void run_bat (int D, int NP,int N_Gen, double A, double r, double Qmin, double Q
   for (size_t i = 0; i < 20; i++) {
     best_bat<<< 10, 100>>>(D, Fitness, F, NP, best, Sol, J, i);
     cudaMemcpy(&f, F, sizeof(double), cudaMemcpyDeviceToHost);
-
+    if(i == 0) ff = f;
   }
+  //printf("-------------\n");
+  //printf("%5.10f\n", ff);
 
   for (size_t i = 0; i < N_Gen; i++) {
     move_bat<<< NP/100, 100>>>(D, Lb, Ub, v, Sol, Fitness, Q, Qmin, Qmax, A, best, S, r, Fnew, function);
@@ -212,22 +222,27 @@ void run_bat (int D, int NP,int N_Gen, double A, double r, double Qmin, double Q
       cudaMemcpy(&f, F, sizeof(double), cudaMemcpyDeviceToHost);
       if(i == 0) ff = f;
     }
+    //printf("-------------\n");
+    //printf("%5.10f\n", ff);
     if(fnew < f){
-      //A *= 0.8;
-      //r *= (1 - exp(-10.0));
+      A *= 0.8;
+      r *= (1 - exp(-1.0));
       f = fnew;
     }
   }
   printf("-------------\n");
   printf("%5.10f\n", ff);
-
+  cudaFree(Lb); cudaFree(Ub); cudaFree(best);
+  cudaFree(Q); cudaFree(Fnew); cudaFree(Fitness);
+  cudaFree(F); cudaFree(v); cudaFree(Sol);
+  cudaFree(S); cudaFree(J);
 }
 
 int main() {
   for (size_t i = 0; i < 100; i++) {
-    //run_bat(2, 10000, 50, 0.5, 0.5, 0.0, 2.0, -32.7680, 32.7680, 1);
-    //run_bat(8, 10000, 50, 0.5, 0.5, 0.0, 2.0, -500.0, 500.0, 2);
-    run_bat(8, 10000, 50, 0.5, 0.5, 0.0, 2.0, -100.0, 100.0, 3);
+    //run_bat(2, 20000, 50, 0.5, 0.5, 0.0, 2.0, -32.7680, 32.7680, 1);
+    //run_bat(2, 20000, 50, 0.5, 0.5, 0.0, 2.0, -500.0, 500.0, 2);
+    run_bat(8, 20000, 50, 0.5, 0.5, 0.0, 2.0, -100.0, 100.0, 3);
   }
   return 0;
 }
